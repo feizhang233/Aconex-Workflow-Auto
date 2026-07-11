@@ -149,6 +149,42 @@ def mail_scan_final_recent(
     )
 
 
+def mail_scan_final_for_workflows(
+    settings: Settings,
+    client: AconexClient,
+    *,
+    workflow_numbers: Iterable[str],
+    max_pages: int | None = None,
+    output: Path | None = None,
+    save_raw: bool = False,
+) -> Path:
+    """Scan Final workflow mails whose workflow number is in ``workflow_numbers``.
+
+    The mail list is still paged through because the Aconex Mail API does not
+    support an exact Final-workflow-number query.  Mail details are requested
+    only after the subject matches one of the supplied workflow numbers.
+    """
+    matched_numbers = {
+        normalized[0]
+        for value in workflow_numbers
+        if (normalized := normalize_workflow_number(str(value))) is not None
+    }
+    output_path = output or settings.output_dir / "mail_final_workflow_comments_matched.xlsx"
+    return _scan_mail(
+        settings,
+        client,
+        command="mail-scan-final-for-workflows",
+        source="mail-scan-final-for-workflows",
+        output=output_path,
+        from_number=None,
+        hours=None,
+        max_pages=max_pages,
+        save_raw=save_raw,
+        debug_candidates=False,
+        workflow_numbers=matched_numbers,
+    )
+
+
 def normalize_workflow_number(value: str) -> tuple[str, int] | None:
     match = WORKFLOW_NUMBER_RE.search(value or "")
     if not match:
@@ -226,6 +262,7 @@ def _scan_mail(
     max_pages: int | None,
     save_raw: bool,
     debug_candidates: bool,
+    workflow_numbers: set[str] | None = None,
 ) -> Path:
     created_at = _utc_now()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours) if hours is not None else None
@@ -241,6 +278,8 @@ def _scan_mail(
             continue
         subject_workflow = _subject_workflow_number(summary.subject)
         if subject_workflow is None:
+            continue
+        if workflow_numbers is not None and subject_workflow[0] not in workflow_numbers:
             continue
         try:
             detail_count += 1

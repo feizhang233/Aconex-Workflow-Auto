@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Refresh pending Workflows and update the paginated Google Sheets workbook.
+# Refresh pending Workflows, matching Final-mail comments, and the Google Sheets workbook.
 
 set -euo pipefail
 
@@ -35,6 +35,6 @@ if [[ -z "$SPREADSHEET_ID" ]]; then
 fi
 
 cd "$PROJECT_ROOT"
-exec "$PYTHON_BIN" main.py google-sheet-sync-reviewing \
+exec "$PYTHON_BIN" main.py google-sheet-update \
   --spreadsheet-id "$SPREADSHEET_ID" \
   --sheet-name "$SHEET_PREFIX"

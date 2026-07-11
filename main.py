@@ -14,11 +14,16 @@ from aconex.config import ensure_directories, load_settings
 from aconex.export_workflow_status import clean_api_error, export_workflow_status
 from aconex.fetch_mail import MailFetcher
 from aconex.fetch_workflow import WorkflowFetcher
-from aconex.google_sheets import sync_google_sheet_all, sync_google_sheet_reviewing
+from aconex.google_sheets import (
+    sync_google_sheet_all,
+    sync_google_sheet_reviewing,
+    sync_google_sheet_reviewing_with_comments,
+)
 from aconex.mail_final_scan import mail_scan_final_all, mail_scan_final_from, mail_scan_final_recent
 from aconex.state_db import DEFAULT_DB_PATH, init_db
 from aconex.utils import update_env_tokens
 from aconex.workflow_sync import workflow_sync_all, workflow_sync_from, workflow_sync_reviewing, workflow_update_open
+from aconex.web_workflow_sync import sync_web_workflows
 from postprocess.normalize_mail import normalize_mail
 from postprocess.normalize_workflow import normalize_workflow
 
@@ -167,6 +172,16 @@ def main() -> None:
     workflow_sync_reviewing_parser.add_argument("--output", type=Path)
     workflow_sync_reviewing_parser.add_argument("--save-raw", action="store_true")
 
+    for command, help_text in (
+        ("web-workflow-sync-all", "Send every Aconex workflow status to DocFlow."),
+        ("web-workflow-sync-changed", "Send only workflow statuses changed since the last local sync."),
+    ):
+        web_sync_parser = sub.add_parser(command, help=help_text)
+        web_sync_parser.add_argument("--web-base-url")
+        web_sync_parser.add_argument("--api-key")
+        web_sync_parser.add_argument("--max-pages", type=int)
+        web_sync_parser.add_argument("--save-raw", action="store_true")
+
     google_sheet_all_parser = sub.add_parser("google-sheet-sync-all")
     google_sheet_all_parser.add_argument("--spreadsheet-id", required=True)
     google_sheet_all_parser.add_argument("--sheet-name", default="WF")
@@ -180,6 +195,17 @@ def main() -> None:
     google_sheet_reviewing_parser.add_argument("--credentials-file", type=Path)
     google_sheet_reviewing_parser.add_argument("--max-pages", type=int)
     google_sheet_reviewing_parser.add_argument("--save-raw", action="store_true")
+
+    google_sheet_update_parser = sub.add_parser(
+        "google-sheet-update",
+        help="Refresh pending workflows, matching Final-mail comments, and Google Sheets.",
+    )
+    google_sheet_update_parser.add_argument("--spreadsheet-id", required=True)
+    google_sheet_update_parser.add_argument("--sheet-name", default="WF")
+    google_sheet_update_parser.add_argument("--credentials-file", type=Path)
+    google_sheet_update_parser.add_argument("--max-pages", type=int)
+    google_sheet_update_parser.add_argument("--mail-max-pages", type=int)
+    google_sheet_update_parser.add_argument("--save-raw", action="store_true")
 
     mail_scan_final_all_parser = sub.add_parser("mail-scan-final-all")
     mail_scan_final_all_parser.add_argument("--max-pages", type=int)
@@ -331,6 +357,23 @@ def main() -> None:
             )
         except requests.HTTPError as exc:
             raise SystemExit(clean_api_error(exc)) from exc
+    elif args.command in {"web-workflow-sync-all", "web-workflow-sync-changed"}:
+        try:
+            result = sync_web_workflows(
+                settings,
+                client,
+                changed_only=args.command == "web-workflow-sync-changed",
+                base_url=args.web_base_url,
+                api_key=args.api_key,
+                max_pages=args.max_pages,
+                save_raw=args.save_raw,
+            )
+        except (requests.RequestException, ValueError) as exc:
+            raise SystemExit(f"DocFlow workflow sync failed: {exc}") from exc
+        print(
+            f"DocFlow workflow sync complete: checked={result.checked}, changed={result.changed}, "
+            f"sent={result.sent}, skipped={result.skipped}, failed={result.failed}"
+        )
     elif args.command == "google-sheet-sync-all":
         try:
             result = sync_google_sheet_all(
@@ -363,6 +406,25 @@ def main() -> None:
             raise SystemExit(clean_api_error(exc)) from exc
         print(
             f"Google Sheet pending sync complete: rows_written={result.rows_written}, "
+            f"changed_workflows={result.changed_workflows}, "
+            f"new_workflows={result.new_workflows}"
+        )
+    elif args.command == "google-sheet-update":
+        try:
+            result = sync_google_sheet_reviewing_with_comments(
+                settings,
+                client,
+                spreadsheet_id=args.spreadsheet_id,
+                sheet_name=args.sheet_name,
+                credentials_file=args.credentials_file or settings.root_dir / "google_service_account.json",
+                max_pages=args.max_pages,
+                mail_max_pages=args.mail_max_pages,
+                save_raw=args.save_raw,
+            )
+        except requests.HTTPError as exc:
+            raise SystemExit(clean_api_error(exc)) from exc
+        print(
+            f"Google Sheet workflow and comments update complete: rows_written={result.rows_written}, "
             f"changed_workflows={result.changed_workflows}, "
             f"new_workflows={result.new_workflows}"
         )
@@ -417,6 +479,7 @@ def main() -> None:
         or args.command.startswith("mail-scan-")
         or args.command == "google-sheet-sync-all"
         or args.command == "google-sheet-sync-reviewing"
+        or args.command == "google-sheet-update"
     ):
         print_rotation_status(auth)
 

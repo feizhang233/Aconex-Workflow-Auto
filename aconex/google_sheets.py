@@ -10,7 +10,7 @@ from typing import Any
 import pandas as pd
 
 from .config import Settings
-from .mail_final_scan import extract_review_comment_text
+from .mail_final_scan import extract_review_comment_text, mail_scan_final_for_workflows
 from .state_db import load_workflow_comments, load_workflows
 from .utils import display_date
 from .workflow_sync import workflow_sync_all, workflow_sync_reviewing
@@ -127,6 +127,68 @@ def sync_google_sheet_reviewing(
         rows_appended=new_workflows,
         changed_workflows=changed_workflows,
         new_workflows=new_workflows,
+    )
+
+
+def sync_google_sheet_reviewing_with_comments(
+    settings: Settings,
+    client: Any,
+    *,
+    spreadsheet_id: str,
+    sheet_name: str,
+    credentials_file: Path,
+    max_pages: int | None = None,
+    mail_max_pages: int | None = None,
+    save_raw: bool = False,
+) -> GoogleSheetSyncResult:
+    """Refresh pending workflows, their Final-mail comments, and all sheet rows.
+
+    A full managed-sheet replacement is deliberate: comments can change without
+    any workflow-status change, so a status-only incremental write would leave
+    column I stale.
+    """
+    workflows_before_sync = _workflow_snapshots(load_workflows())
+    output = workflow_sync_reviewing(
+        settings,
+        client,
+        max_pages=max_pages,
+        save_raw=save_raw,
+    )
+    refreshed_numbers = _workflow_numbers_from_output(output)
+    workflows_after_sync = load_workflows()
+    (
+        changed_numbers,
+        new_numbers,
+        advanced_to_step_2_numbers,
+        completed_step_2_numbers,
+    ) = _workflow_change_sets(
+        workflows_before_sync,
+        workflows_after_sync,
+        refreshed_numbers,
+    )
+    mail_scan_final_for_workflows(
+        settings,
+        client,
+        workflow_numbers=(str(row.get("workflow_number") or "") for row in workflows_after_sync),
+        max_pages=mail_max_pages,
+        save_raw=save_raw,
+    )
+    rows = _workflow_sheet_rows(load_workflows())
+    gateway = GoogleSheetsGateway(spreadsheet_id, sheet_name, credentials_file)
+    gateway.replace_all_paginated(rows)
+    gateway.append_refresh_log(
+        refreshed_workflows=len(refreshed_numbers),
+        changed_workflows=len(changed_numbers),
+        new_workflows=len(new_numbers),
+        advanced_to_step_2_numbers=advanced_to_step_2_numbers,
+        completed_step_2_numbers=completed_step_2_numbers,
+    )
+    return GoogleSheetSyncResult(
+        mode="reviewing-with-comments",
+        rows_written=len(rows),
+        rows_appended=len(new_numbers),
+        changed_workflows=len(changed_numbers),
+        new_workflows=len(new_numbers),
     )
 
 

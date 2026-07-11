@@ -27,6 +27,8 @@ class Settings:
     project_id: str
     default_mail_box: str
     page_size: int
+    docflow_base_url: str
+    docflow_api_key: str
     root_dir: Path = ROOT_DIR
 
     @property
@@ -64,6 +66,8 @@ def load_settings() -> Settings:
         project_id=_get("ACONEX_PROJECT_ID"),
         default_mail_box=_get("ACONEX_DEFAULT_MAIL_BOX", "inbox"),
         page_size=int(_get("ACONEX_PAGE_SIZE", "250") or "250"),
+        docflow_base_url=_get("DOCFLOW_BASE_URL", "https://feizhang233.com").rstrip("/"),
+        docflow_api_key=_get("DOCFLOW_API_KEY"),
     )
 
 

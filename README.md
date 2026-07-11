@@ -26,6 +26,8 @@ ACONEX_REFRESH_TOKEN=...          # preferred; auto-rotated into .env
 ACONEX_PROJECT_ID=...
 ACONEX_DEFAULT_MAIL_BOX=inbox
 ACONEX_PAGE_SIZE=250
+DOCFLOW_BASE_URL=https://feizhang233.com
+DOCFLOW_API_KEY=...                # same value as the web server EXTERNAL_API_KEY
 ```
 
 Optional for Google Sheets schedule:
@@ -52,7 +54,14 @@ python main.py workflow-sync-from --from-number 800
 python main.py workflow-update-open
 python main.py workflow-sync-reviewing
 python main.py export-workflow-status --from-number 800
+python main.py web-workflow-sync-all
+python main.py web-workflow-sync-changed
 ```
+
+`web-workflow-sync-all` sends every workflow status to DocFlow. Use it for a
+manual full refresh. `web-workflow-sync-changed` scans Aconex but sends only
+statuses that differ from the local SQLite snapshot. Both commands treat a
+DocFlow `404 Workflow not found` response as a normal skip.
 
 ### Mail → Final workflow comments
 
@@ -69,7 +78,12 @@ Put service account JSON at `google_service_account.json` and share the sheet wi
 ```bash
 python main.py google-sheet-sync-all --spreadsheet-id YOUR_ID
 python main.py google-sheet-sync-reviewing --spreadsheet-id YOUR_ID
+python main.py google-sheet-update --spreadsheet-id YOUR_ID
 ```
+
+`google-sheet-update` is the complete scheduled update: it refreshes pending
+workflow statuses, scans matching `Final (WF-...)` mail for comments, and
+rewrites the managed Google Sheet pages so the comments column is current.
 
 macOS weekday 10:00 schedule:
 
