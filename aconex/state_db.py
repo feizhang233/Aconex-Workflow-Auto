@@ -51,6 +51,12 @@ WORKFLOW_COMMENT_COLUMNS = (
     "created_at",
 )
 
+DOCFLOW_SYNC_COLUMNS = (
+    "workflow_id",
+    "payload_hash",
+    "last_synced_at",
+)
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
@@ -142,6 +148,12 @@ def init_db(db_path: str | Path | None = None) -> Path:
                 changed_count INTEGER,
                 failed_count INTEGER,
                 notes TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS docflow_workflow_sync (
+                workflow_id TEXT PRIMARY KEY,
+                payload_hash TEXT NOT NULL,
+                last_synced_at TEXT NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_workflows_open
@@ -392,6 +404,37 @@ def load_workflows(db_path: str | Path | None = None) -> list[dict[str, Any]]:
             "SELECT * FROM workflows ORDER BY workflow_number_int, workflow_number"
         ).fetchall()
     return _rows_to_dicts(rows)
+
+
+def load_docflow_sync_state(db_path: str | Path | None = None) -> dict[str, str]:
+    """Return the last successfully handled DocFlow payload hash by workflow."""
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT workflow_id, payload_hash FROM docflow_workflow_sync"
+        ).fetchall()
+    return {str(row["workflow_id"]): str(row["payload_hash"]) for row in rows}
+
+
+def upsert_docflow_sync_state(
+    workflow_id: str,
+    payload_hash: str,
+    *,
+    synced_at: str | None = None,
+    db_path: str | Path | None = None,
+) -> None:
+    init_db(db_path)
+    with _connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO docflow_workflow_sync (workflow_id, payload_hash, last_synced_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(workflow_id) DO UPDATE SET
+                payload_hash = excluded.payload_hash,
+                last_synced_at = excluded.last_synced_at
+            """,
+            (workflow_id, payload_hash, synced_at or _utc_now()),
+        )
 
 
 def load_workflow_comments(db_path: str | Path | None = None) -> list[dict[str, Any]]:

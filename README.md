@@ -49,19 +49,19 @@ python main.py token-info
 ### Workflow → SQLite + Excel
 
 ```bash
-python main.py workflow-sync-all
-python main.py workflow-sync-from --from-number 800
-python main.py workflow-update-open
-python main.py workflow-sync-reviewing
+python main.py workflow-db-sync-all
+python main.py workflow-db-sync-changed
+python main.py docflow-workflow-push-all
+python main.py docflow-workflow-push-changed
 python main.py export-workflow-status --from-number 800
-python main.py web-workflow-sync-all
-python main.py web-workflow-sync-changed
 ```
 
-`web-workflow-sync-all` sends every workflow status to DocFlow. Use it for a
-manual full refresh. `web-workflow-sync-changed` scans Aconex but sends only
-statuses that differ from the local SQLite snapshot. Both commands treat a
-DocFlow `404 Workflow not found` response as a normal skip.
+The DocFlow commands read only the local SQLite database; they never contact
+Aconex. `workflow-db-sync-all` imports all Aconex workflows. For regular
+updates, use `workflow-db-sync-changed`, which refreshes current workflows and
+locally pending workflows. `docflow-workflow-push-changed` publishes only
+workflow payloads not yet handled by DocFlow; a `404 Workflow not found` is a
+normal skipped result and is not retried unless the workflow status changes.
 
 ### Mail → Final workflow comments
 

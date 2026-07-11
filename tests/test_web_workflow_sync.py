@@ -1,6 +1,6 @@
 import unittest
 
-from aconex.web_workflow_sync import _api_root, _feedback_code, _web_payload, _workflow_url
+from aconex.web_workflow_sync import _api_root, _feedback_code, _payload_hash, _web_payload, _workflow_url
 
 
 class WebWorkflowSyncTests(unittest.TestCase):
@@ -32,6 +32,10 @@ class WebWorkflowSyncTests(unittest.TestCase):
         self.assertEqual(_api_root("https://feizhang233.com"), "https://feizhang233.com/api")
         self.assertEqual(_api_root("https://feizhang233.com/api/"), "https://feizhang233.com/api")
         self.assertTrue(_workflow_url("https://feizhang233.com", "WF 1/2").endswith("/WF%201%2F2"))
+
+    def test_payload_hash_is_stable_for_the_same_payload(self):
+        payload = _web_payload({"step_1_review_status": "A-Approved"}, ("R1", "R2"))
+        self.assertEqual(_payload_hash(payload), _payload_hash(dict(payload)))
 
 
 if __name__ == "__main__":

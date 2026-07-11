@@ -23,7 +23,7 @@ from aconex.mail_final_scan import mail_scan_final_all, mail_scan_final_from, ma
 from aconex.state_db import DEFAULT_DB_PATH, init_db
 from aconex.utils import update_env_tokens
 from aconex.workflow_sync import workflow_sync_all, workflow_sync_from, workflow_sync_reviewing, workflow_update_open
-from aconex.web_workflow_sync import sync_web_workflows
+from aconex.web_workflow_sync import push_workflows_to_docflow
 from postprocess.normalize_mail import normalize_mail
 from postprocess.normalize_workflow import normalize_workflow
 
@@ -173,14 +173,21 @@ def main() -> None:
     workflow_sync_reviewing_parser.add_argument("--save-raw", action="store_true")
 
     for command, help_text in (
-        ("web-workflow-sync-all", "Send every Aconex workflow status to DocFlow."),
-        ("web-workflow-sync-changed", "Send only workflow statuses changed since the last local sync."),
+        ("workflow-db-sync-all", "Fetch all Aconex workflows and update the local SQLite database."),
+        ("workflow-db-sync-changed", "Refresh active Aconex workflows and update the local SQLite database."),
     ):
-        web_sync_parser = sub.add_parser(command, help=help_text)
-        web_sync_parser.add_argument("--web-base-url")
-        web_sync_parser.add_argument("--api-key")
-        web_sync_parser.add_argument("--max-pages", type=int)
-        web_sync_parser.add_argument("--save-raw", action="store_true")
+        db_sync_parser = sub.add_parser(command, help=help_text)
+        db_sync_parser.add_argument("--max-pages", type=int)
+        db_sync_parser.add_argument("--output", type=Path)
+        db_sync_parser.add_argument("--save-raw", action="store_true")
+
+    for command, help_text in (
+        ("docflow-workflow-push-all", "Push every locally stored workflow status to DocFlow."),
+        ("docflow-workflow-push-changed", "Push only locally changed workflow statuses to DocFlow."),
+    ):
+        docflow_push_parser = sub.add_parser(command, help=help_text)
+        docflow_push_parser.add_argument("--web-base-url")
+        docflow_push_parser.add_argument("--api-key")
 
     google_sheet_all_parser = sub.add_parser("google-sheet-sync-all")
     google_sheet_all_parser.add_argument("--spreadsheet-id", required=True)
@@ -357,21 +364,32 @@ def main() -> None:
             )
         except requests.HTTPError as exc:
             raise SystemExit(clean_api_error(exc)) from exc
-    elif args.command in {"web-workflow-sync-all", "web-workflow-sync-changed"}:
+    elif args.command == "workflow-db-sync-all":
         try:
-            result = sync_web_workflows(
+            workflow_sync_all(
+                settings, client, max_pages=args.max_pages, output=args.output, save_raw=args.save_raw
+            )
+        except requests.HTTPError as exc:
+            raise SystemExit(clean_api_error(exc)) from exc
+    elif args.command == "workflow-db-sync-changed":
+        try:
+            workflow_sync_reviewing(
+                settings, client, max_pages=args.max_pages, output=args.output, save_raw=args.save_raw
+            )
+        except requests.HTTPError as exc:
+            raise SystemExit(clean_api_error(exc)) from exc
+    elif args.command in {"docflow-workflow-push-all", "docflow-workflow-push-changed"}:
+        try:
+            result = push_workflows_to_docflow(
                 settings,
-                client,
-                changed_only=args.command == "web-workflow-sync-changed",
+                changed_only=args.command == "docflow-workflow-push-changed",
                 base_url=args.web_base_url,
                 api_key=args.api_key,
-                max_pages=args.max_pages,
-                save_raw=args.save_raw,
             )
         except (requests.RequestException, ValueError) as exc:
             raise SystemExit(f"DocFlow workflow sync failed: {exc}") from exc
         print(
-            f"DocFlow workflow sync complete: checked={result.checked}, changed={result.changed}, "
+            f"DocFlow workflow push complete: checked={result.checked}, "
             f"sent={result.sent}, skipped={result.skipped}, failed={result.failed}"
         )
     elif args.command == "google-sheet-sync-all":
