@@ -1,0 +1,7 @@
+requests
+python-dotenv
+pandas
+openpyxl
+lxml
+google-api-python-client
+google-auth

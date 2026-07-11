@@ -1,0 +1,16 @@
+.env
+.env.bak.*
+google_service_account.json
+.venv/
+__pycache__/
+*.py[cod]
+.DS_Store
+data/raw/
+data/parsed/
+data/output/
+data/state/*.sqlite
+data/state/*.sqlite-*
+data/state/*.sqlite.bak
+.idea/
+logs/
+*.log
