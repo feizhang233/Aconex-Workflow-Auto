@@ -28,6 +28,8 @@ ACONEX_DEFAULT_MAIL_BOX=inbox
 ACONEX_PAGE_SIZE=250
 DOCFLOW_BASE_URL=https://feizhang233.com
 DOCFLOW_API_KEY=...                # same value as the web server EXTERNAL_API_KEY
+CF_ACCESS_CLIENT_ID=...            # Cloudflare Access Service Token client ID
+CF_ACCESS_CLIENT_SECRET=...        # Cloudflare Access Service Token client secret
 ```
 
 Optional for Google Sheets schedule:
@@ -62,6 +64,8 @@ updates, use `workflow-db-sync-changed`, which refreshes current workflows and
 locally pending workflows. `docflow-workflow-push-changed` publishes only
 workflow payloads not yet handled by DocFlow; a `404 Workflow not found` is a
 normal skipped result and is not retried unless the workflow status changes.
+All DocFlow requests include the Cloudflare Access Service Token headers when
+`CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are configured.
 
 ### Mail → Final workflow comments
 

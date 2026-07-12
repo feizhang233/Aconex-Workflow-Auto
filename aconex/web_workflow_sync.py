@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 from typing import Any
@@ -43,12 +42,13 @@ def push_workflows_to_docflow(
         raise ValueError("DOCFLOW_API_KEY or --api-key is required")
 
     workflows = load_workflows()
-    reviewers = _load_feedback_reviewers(url)
+    headers = _docflow_headers(settings, key)
+    reviewers = _load_feedback_reviewers(url, headers=headers)
     prior_hashes = load_docflow_sync_state() if changed_only else {}
     sent = skipped = failed = 0
 
     with requests.Session() as session:
-        session.headers.update({"X-API-Key": key, "Accept": "application/json"})
+        session.headers.update(headers)
         for row in workflows:
             workflow_id = str(row.get("workflow_id") or "").strip()
             workflow_number = str(row.get("workflow_number") or "").strip()
@@ -92,10 +92,46 @@ def push_workflows_to_docflow(
     return result
 
 
-def _load_feedback_reviewers(base_url: str) -> tuple[str, str]:
-    response = requests.get(f"{_api_root(base_url)}/settings/workflow", timeout=30)
+def _docflow_headers(settings: Settings, api_key: str) -> dict[str, str]:
+    """Build headers required by both Cloudflare Access and DocFlow itself."""
+    headers = {"X-API-Key": api_key, "Accept": "application/json"}
+    client_id = settings.cf_access_client_id
+    client_secret = settings.cf_access_client_secret
+    if bool(client_id) != bool(client_secret):
+        raise ValueError(
+            "CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET must be configured together"
+        )
+    if client_id:
+        headers["CF-Access-Client-Id"] = client_id
+        headers["CF-Access-Client-Secret"] = client_secret
+    return headers
+
+
+def _load_feedback_reviewers(
+    base_url: str, *, headers: Mapping[str, str]
+) -> tuple[str, str]:
+    response = requests.get(
+        f"{_api_root(base_url)}/settings/workflow",
+        headers=dict(headers),
+        timeout=30,
+        allow_redirects=False,
+    )
+    if response.is_redirect:
+        raise ValueError(
+            "DocFlow request was redirected by Cloudflare Access. "
+            "Configure CF_ACCESS_CLIENT_ID and CF_ACCESS_CLIENT_SECRET with a valid Service Token."
+        )
     response.raise_for_status()
-    reviewers = response.json().get("feedback_reviewers") or []
+    content_type = response.headers.get("Content-Type", "").lower()
+    if "application/json" not in content_type:
+        raise ValueError(
+            "DocFlow settings endpoint returned non-JSON content "
+            f"({content_type or 'missing Content-Type'}); check Cloudflare Access."
+        )
+    try:
+        reviewers = response.json().get("feedback_reviewers") or []
+    except ValueError as exc:
+        raise ValueError("DocFlow settings endpoint returned invalid JSON") from exc
     if len(reviewers) != 2 or not all(str(value).strip() for value in reviewers):
         raise ValueError("DocFlow workflow settings must contain exactly two feedback reviewers")
     return str(reviewers[0]), str(reviewers[1])

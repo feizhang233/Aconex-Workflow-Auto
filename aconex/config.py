@@ -29,6 +29,8 @@ class Settings:
     page_size: int
     docflow_base_url: str
     docflow_api_key: str
+    cf_access_client_id: str
+    cf_access_client_secret: str
     root_dir: Path = ROOT_DIR
 
     @property
@@ -68,6 +70,8 @@ def load_settings() -> Settings:
         page_size=int(_get("ACONEX_PAGE_SIZE", "250") or "250"),
         docflow_base_url=_get("DOCFLOW_BASE_URL", "https://feizhang233.com").rstrip("/"),
         docflow_api_key=_get("DOCFLOW_API_KEY"),
+        cf_access_client_id=_get("CF_ACCESS_CLIENT_ID"),
+        cf_access_client_secret=_get("CF_ACCESS_CLIENT_SECRET"),
     )
 
 
