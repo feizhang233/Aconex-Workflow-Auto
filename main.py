@@ -214,6 +214,22 @@ def main() -> None:
     google_sheet_update_parser.add_argument("--mail-max-pages", type=int)
     google_sheet_update_parser.add_argument("--save-raw", action="store_true")
 
+    daily_update_parser = sub.add_parser(
+        "daily-update",
+        help=(
+            "Weekday pipeline: pull changed Aconex workflows and Final-mail comments "
+            "into SQLite, then push updates to DocFlow and Google Sheets."
+        ),
+    )
+    daily_update_parser.add_argument("--spreadsheet-id", required=True)
+    daily_update_parser.add_argument("--sheet-name", default="WF")
+    daily_update_parser.add_argument("--credentials-file", type=Path)
+    daily_update_parser.add_argument("--max-pages", type=int)
+    daily_update_parser.add_argument("--mail-max-pages", type=int)
+    daily_update_parser.add_argument("--save-raw", action="store_true")
+    daily_update_parser.add_argument("--web-base-url")
+    daily_update_parser.add_argument("--api-key")
+
     mail_scan_final_all_parser = sub.add_parser("mail-scan-final-all")
     mail_scan_final_all_parser.add_argument("--max-pages", type=int)
     mail_scan_final_all_parser.add_argument("--output", type=Path)
@@ -446,6 +462,42 @@ def main() -> None:
             f"changed_workflows={result.changed_workflows}, "
             f"new_workflows={result.new_workflows}"
         )
+    elif args.command == "daily-update":
+        # 1) Aconex → SQLite (changed workflows + matching Final-mail comments)
+        # 2) SQLite → Google Sheets
+        # 3) SQLite → DocFlow (payloads not yet pushed / changed since last push)
+        try:
+            sheet_result = sync_google_sheet_reviewing_with_comments(
+                settings,
+                client,
+                spreadsheet_id=args.spreadsheet_id,
+                sheet_name=args.sheet_name,
+                credentials_file=args.credentials_file or settings.root_dir / "google_service_account.json",
+                max_pages=args.max_pages,
+                mail_max_pages=args.mail_max_pages,
+                save_raw=args.save_raw,
+            )
+        except requests.HTTPError as exc:
+            raise SystemExit(clean_api_error(exc)) from exc
+        print(
+            f"Aconex → DB → Google Sheet complete: rows_written={sheet_result.rows_written}, "
+            f"changed_workflows={sheet_result.changed_workflows}, "
+            f"new_workflows={sheet_result.new_workflows}"
+        )
+        try:
+            docflow_result = push_workflows_to_docflow(
+                settings,
+                changed_only=True,
+                base_url=args.web_base_url,
+                api_key=args.api_key,
+            )
+        except (requests.RequestException, ValueError) as exc:
+            raise SystemExit(f"DocFlow workflow sync failed: {exc}") from exc
+        print(
+            f"DB → DocFlow complete: checked={docflow_result.checked}, "
+            f"sent={docflow_result.sent}, skipped={docflow_result.skipped}, "
+            f"failed={docflow_result.failed}"
+        )
     elif args.command == "mail-scan-final-all":
         try:
             mail_scan_final_all(
@@ -498,6 +550,7 @@ def main() -> None:
         or args.command == "google-sheet-sync-all"
         or args.command == "google-sheet-sync-reviewing"
         or args.command == "google-sheet-update"
+        or args.command == "daily-update"
     ):
         print_rotation_status(auth)
 
