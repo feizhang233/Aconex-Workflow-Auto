@@ -266,14 +266,15 @@ def upsert_workflow(row: Mapping[str, Any], db_path: str | Path | None = None) -
 
 
 def get_pending_workflows(db_path: str | Path | None = None) -> list[dict[str, Any]]:
-    """Return locally stored Workflows that have not reached a completed state."""
+    """Return locally stored Workflows that still need Aconex status checks."""
     init_db(db_path)
     with _connect(db_path) as conn:
         rows = conn.execute(
             """
             SELECT *
             FROM workflows
-            WHERE is_completed IS NULL OR is_completed = 0
+            WHERE (is_completed IS NULL OR is_completed = 0)
+              AND lower(trim(coalesce(review_status, ''))) NOT IN ('terminate', 'terminated')
             ORDER BY workflow_number_int, workflow_number
             """
         ).fetchall()

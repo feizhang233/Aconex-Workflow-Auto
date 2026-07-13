@@ -1,13 +1,16 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from aconex.web_workflow_sync import (
     _api_root,
     _docflow_headers,
     _feedback_code,
+    _gds_as_step_2,
     _payload_hash,
     _web_payload,
     _workflow_url,
+    push_workflows_to_docflow,
 )
 
 
@@ -45,6 +48,12 @@ class WebWorkflowSyncTests(unittest.TestCase):
         payload = _web_payload({"step_1_review_status": "A-Approved"}, ("R1", "R2"))
         self.assertEqual(_payload_hash(payload), _payload_hash(dict(payload)))
 
+    def test_gds_is_always_reordered_to_step_2(self):
+        self.assertEqual(_gds_as_step_2(("GDS", "UTIBER")), ("UTIBER", "GDS"))
+        self.assertEqual(_gds_as_step_2(("UTIBER", "GDS")), ("UTIBER", "GDS"))
+        with self.assertRaisesRegex(ValueError, "GDS exactly once"):
+            _gds_as_step_2(("R1", "R2"))
+
     def test_docflow_headers_include_both_authentication_layers(self):
         settings = SimpleNamespace(
             cf_access_client_id="service-client-id",
@@ -67,6 +76,52 @@ class WebWorkflowSyncTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "must be configured together"):
             _docflow_headers(settings, "docflow-api-key")
+
+    @patch("aconex.web_workflow_sync.add_update_run")
+    @patch("aconex.web_workflow_sync.mark_manifest_sync")
+    @patch("aconex.web_workflow_sync.load_docflow_sync_state")
+    @patch("aconex.web_workflow_sync._load_feedback_reviewers")
+    @patch("aconex.web_workflow_sync.load_workflows")
+    @patch("aconex.web_workflow_sync.pending_manifest_workflows")
+    def test_changed_push_only_consumes_pending_manifest_entries(
+        self,
+        pending_manifest,
+        load_workflows,
+        load_reviewers,
+        load_hashes,
+        mark_sync,
+        _add_run,
+    ):
+        settings = SimpleNamespace(
+            docflow_base_url="https://docflow.example",
+            docflow_api_key="key",
+            cf_access_client_id="",
+            cf_access_client_secret="",
+        )
+        pending_manifest.return_value = [
+            {"workflow_id": "1", "workflow_number": "WF-000001"}
+        ]
+        workflow = {
+            "workflow_id": "1",
+            "workflow_number": "WF-000001",
+            "step_1_review_status": "A-Approved",
+            "step_2_review_status": "B-Approved with comments",
+            "review_status": "B-Approved with comments",
+        }
+        load_workflows.return_value = [
+            workflow,
+            {"workflow_id": "2", "workflow_number": "WF-000002"},
+        ]
+        load_reviewers.return_value = ("GDS", "UTIBER")
+        load_hashes.return_value = {
+            "1": _payload_hash(_web_payload(workflow, ("UTIBER", "GDS")))
+        }
+
+        result = push_workflows_to_docflow(settings, changed_only=True)
+
+        self.assertEqual(result.checked, 1)
+        self.assertEqual(result.sent, 0)
+        mark_sync.assert_called_with("docflow", ["1"], success=True)
 
 
 if __name__ == "__main__":

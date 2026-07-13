@@ -18,7 +18,7 @@ control.
 | `data/parsed/mail/` | Mail field-inventory CSV files | Generated |
 | `data/parsed/workflow/` | Workflow field-inventory CSV files | Generated |
 | `data/output/` | Excel deliverables | Generated; share/export as needed |
-| `data/state/` | Local SQLite sync database and backup | Runtime state; do not commit |
+| `data/state/` | Local SQLite sync database, backup, and weekly update manifest | Runtime state; do not commit |
 
 ## Sensitive Local Files
 

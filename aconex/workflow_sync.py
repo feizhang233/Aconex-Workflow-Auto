@@ -23,6 +23,7 @@ from .state_db import (
     upsert_workflow,
 )
 from .utils import display_date
+from .workflow_update_manifest import record_workflow_changes
 
 
 WORKFLOW_SYNC_COLUMNS = [
@@ -76,7 +77,7 @@ KEY_STATUS_COLUMNS = [
     "is_completed",
 ]
 
-COMPLETED_STATUS_MARKERS = ("completed", "closed", "terminated")
+COMPLETED_STATUS_MARKERS = ("completed", "closed", "terminate", "terminated")
 
 
 def workflow_sync_all(
@@ -228,6 +229,7 @@ def is_workflow_completed(row: Mapping[str, Any]) -> bool:
         for key in (
             "workflow_status",
             "step_status",
+            "review_status",
         )
     ).lower()
     return any(marker in status_text for marker in COMPLETED_STATUS_MARKERS)
@@ -247,26 +249,44 @@ def _sync_rows(
     changed_count = 0
     failed_count = 0
     synced_ids: list[str] = []
+    manifest_changes: list[dict[str, Any]] = []
 
     for raw_row in rows:
         try:
             row = _db_row(raw_row, checked_at=checked_at, source=source)
             old_row = old_by_id.get(row["workflow_id"])
-            if _status_changed(old_row, row):
+            status_changed = _status_changed(old_row, row)
+            if status_changed:
+                change_summary = _change_summary(old_row, row)
                 add_workflow_history(
                     row["workflow_id"],
                     workflow_number=row["workflow_number"],
                     checked_at=checked_at,
-                    change_summary=_change_summary(old_row, row),
+                    change_summary=change_summary,
                     old_data_json=_history_payload(old_row) if old_row else None,
                     new_data_json=_history_payload(row),
                 )
                 changed_count += 1
             upsert_workflow(row)
+            if status_changed:
+                manifest_changes.append(
+                    {
+                        "workflow_id": row["workflow_id"],
+                        "workflow_number": row["workflow_number"],
+                        "kind": "new" if old_row is None else "status",
+                        "changed_at": checked_at,
+                        "summary": change_summary,
+                        "old": _history_payload(old_row) if old_row else None,
+                        "new": _history_payload(row),
+                    }
+                )
             synced_ids.append(row["workflow_id"])
         except Exception as exc:
             failed_count += 1
             print(f"Failed to sync workflow row {raw_row.get('workflow_number') or '<unknown>'}: {exc}")
+
+    if manifest_changes:
+        record_workflow_changes(manifest_changes)
 
     add_update_run(
         command=command,

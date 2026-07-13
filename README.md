@@ -72,12 +72,15 @@ python main.py docflow-workflow-push-changed
 python main.py export-workflow-status --from-number 800
 ```
 
-The DocFlow commands read only the local SQLite database; they never contact
+The DocFlow commands read only local SQLite/manifest state; they never contact
 Aconex. `workflow-db-sync-all` imports all Aconex workflows. For regular
 updates, use `workflow-db-sync-changed`, which refreshes current workflows and
-locally pending workflows. `docflow-workflow-push-changed` publishes only
-workflow payloads not yet handled by DocFlow; a `404 Workflow not found` is a
-normal skipped result and is not retried unless the workflow status changes.
+locally reviewing/pending workflows. These changes are merged into the current
+ISO-week manifest at `data/state/workflow_update_manifest.json`.
+`docflow-workflow-push-changed` publishes only manifest entries whose DocFlow
+sync is pending/failed; a `404 Workflow not found` is a normal skipped result
+and is not retried unless the workflow status changes. Newly discovered Aconex
+workflows are not queued for DocFlow; only later status changes are eligible.
 All DocFlow requests include the Cloudflare Access Service Token headers when
 `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are configured.
 
@@ -99,17 +102,25 @@ python main.py google-sheet-sync-reviewing --spreadsheet-id YOUR_ID
 python main.py google-sheet-update --spreadsheet-id YOUR_ID
 ```
 
-`google-sheet-update` refreshes pending workflow statuses, scans matching
-`Final (WF-...)` mail for comments, writes them to SQLite, and rewrites the
-managed Google Sheet pages so the comments column is current.
+`google-sheet-update` refreshes reviewing/pending workflow statuses and discovers
+new workflows. When a non-terminated Step 2 moves from Pending to A/B/C, it scans
+the latest 72 hours of `Final (WF-...)` mail and fetches details only for those
+workflow numbers. Status/comment changes are written to SQLite and the weekly
+manifest; Google Sheets updates only manifest entries not yet synchronized.
 
 ## Daily weekday pipeline (VPS)
 
 `daily-update` is the end-to-end job for unattended runs:
 
-1. Pull changed Aconex workflows and matching Final-mail comments into SQLite
-2. Update Google Sheets from the database
-3. Push changed workflow statuses from the database to DocFlow
+1. Pull new and reviewing/pending Aconex workflows into SQLite and the weekly manifest
+2. For qualifying Step 2 transitions, pull matching 72-hour Final-mail comments
+3. Update only unsynchronized manifest entries in Google Sheets
+4. Push only unsynchronized manifest entries to DocFlow (GDS is always Step 2)
+
+Within one ISO week, repeated changes are merged. On week rollover, fully
+synchronized entries are removed and pending/failed entries are carried forward.
+Manifest writes use a same-directory temporary file, `fsync`, atomic replace,
+and a file lock so cron cannot expose partially written JSON.
 
 ### Run once manually
 
@@ -163,7 +174,7 @@ python main.py normalize-mail
 python main.py normalize-workflow
 ```
 
-Raw responses → `data/raw/`; Excel → `data/output/`; DB → `data/state/aconex.sqlite`.
+Raw responses → `data/raw/`; Excel → `data/output/`; DB/manifest → `data/state/`.
 
 ## Layout
 

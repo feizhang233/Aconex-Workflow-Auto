@@ -14,7 +14,13 @@ from lxml import etree
 from .client import AconexClient
 from .config import Settings
 from .fetch_mail import DEFAULT_RETURN_FIELDS, MAIL_ACCEPT_V2
-from .state_db import add_update_run, load_workflow_comments, upsert_workflow_comment
+from .state_db import (
+    add_update_run,
+    load_workflow_comments,
+    load_workflows,
+    upsert_workflow_comment,
+)
+from .workflow_update_manifest import record_workflow_changes
 
 
 COMMENT_OUTPUT_COLUMNS = [
@@ -95,6 +101,7 @@ def mail_scan_final_all(
         max_pages=max_pages,
         save_raw=save_raw,
         debug_candidates=debug_candidates,
+        fail_on_error=False,
     )
 
 
@@ -120,6 +127,7 @@ def mail_scan_final_from(
         max_pages=max_pages,
         save_raw=save_raw,
         debug_candidates=debug_candidates,
+        fail_on_error=False,
     )
 
 
@@ -146,6 +154,7 @@ def mail_scan_final_recent(
         max_pages=max_pages,
         save_raw=save_raw,
         debug_candidates=debug_candidates,
+        fail_on_error=False,
     )
 
 
@@ -154,13 +163,14 @@ def mail_scan_final_for_workflows(
     client: AconexClient,
     *,
     workflow_numbers: Iterable[str],
+    hours: int = 72,
     max_pages: int | None = None,
     output: Path | None = None,
     save_raw: bool = False,
 ) -> Path:
     """Scan Final workflow mails whose workflow number is in ``workflow_numbers``.
 
-    The mail list is still paged through because the Aconex Mail API does not
+    The recent mail list is still paged through because the Aconex Mail API does not
     support an exact Final-workflow-number query.  Mail details are requested
     only after the subject matches one of the supplied workflow numbers.
     """
@@ -177,11 +187,12 @@ def mail_scan_final_for_workflows(
         source="mail-scan-final-for-workflows",
         output=output_path,
         from_number=None,
-        hours=None,
+        hours=hours,
         max_pages=max_pages,
         save_raw=save_raw,
         debug_candidates=False,
         workflow_numbers=matched_numbers,
+        fail_on_error=True,
     )
 
 
@@ -263,6 +274,7 @@ def _scan_mail(
     save_raw: bool,
     debug_candidates: bool,
     workflow_numbers: set[str] | None = None,
+    fail_on_error: bool = False,
 ) -> Path:
     created_at = _utc_now()
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours) if hours is not None else None
@@ -271,6 +283,7 @@ def _scan_mail(
     changed_count = 0
     failed_count = 0
     run_rows: list[dict[str, Any]] = []
+    changed_mail_ids: dict[str, set[str]] = {}
 
     for summary in _iter_mail_summaries(settings, client, max_pages=max_pages, save_raw=save_raw, cutoff=cutoff):
         checked_count += 1
@@ -307,10 +320,37 @@ def _scan_mail(
                 row.pop("_review_history_rows_count", None)
                 if upsert_workflow_comment(row):
                     changed_count += 1
+                    changed_mail_ids.setdefault(str(row["workflow_number"]), set()).add(
+                        str(row["mail_id"])
+                    )
                 run_rows.append(row)
         except Exception as exc:
             failed_count += 1
             print(f"Failed to scan mail {summary.mail_id or '<unknown>'}: {exc}")
+
+    if changed_mail_ids:
+        workflows_by_number = {
+            str(row.get("workflow_number") or ""): row
+            for row in load_workflows()
+            if row.get("workflow_number")
+        }
+        manifest_changes = []
+        for workflow_number, mail_ids in changed_mail_ids.items():
+            workflow = workflows_by_number.get(workflow_number)
+            if workflow is None or not workflow.get("workflow_id"):
+                continue
+            manifest_changes.append(
+                {
+                    "workflow_id": str(workflow["workflow_id"]),
+                    "workflow_number": workflow_number,
+                    "kind": "comments",
+                    "changed_at": created_at,
+                    "summary": "Final Mail review comments changed",
+                    "mail_ids": sorted(mail_ids),
+                }
+            )
+        if manifest_changes:
+            record_workflow_changes(manifest_changes)
 
     add_update_run(
         command=command,
@@ -333,6 +373,11 @@ def _scan_mail(
         f"Mail final workflow scan complete: checked={checked_count}, "
         f"details={detail_count}, changed={changed_count}, failed={failed_count}"
     )
+    if fail_on_error and failed_count:
+        raise RuntimeError(
+            f"Final Mail scan failed for {failed_count} relevant message(s); "
+            "the manifest remains pending for retry"
+        )
     return output
 
 

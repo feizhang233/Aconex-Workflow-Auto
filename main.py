@@ -457,15 +457,17 @@ def main() -> None:
             )
         except requests.HTTPError as exc:
             raise SystemExit(clean_api_error(exc)) from exc
+        except RuntimeError as exc:
+            raise SystemExit(f"Google Sheet workflow update failed: {exc}") from exc
         print(
             f"Google Sheet workflow and comments update complete: rows_written={result.rows_written}, "
             f"changed_workflows={result.changed_workflows}, "
             f"new_workflows={result.new_workflows}"
         )
     elif args.command == "daily-update":
-        # 1) Aconex → SQLite (changed workflows + matching Final-mail comments)
-        # 2) SQLite → Google Sheets
-        # 3) SQLite → DocFlow (payloads not yet pushed / changed since last push)
+        # 1) Aconex → SQLite + weekly manifest (new/changed workflows)
+        # 2) Triggered Final Mail comments → SQLite + manifest
+        # 3) Unsynced manifest entries → Google Sheets and DocFlow
         try:
             sheet_result = sync_google_sheet_reviewing_with_comments(
                 settings,
@@ -479,6 +481,8 @@ def main() -> None:
             )
         except requests.HTTPError as exc:
             raise SystemExit(clean_api_error(exc)) from exc
+        except RuntimeError as exc:
+            raise SystemExit(f"Daily workflow update failed: {exc}") from exc
         print(
             f"Aconex → DB → Google Sheet complete: rows_written={sheet_result.rows_written}, "
             f"changed_workflows={sheet_result.changed_workflows}, "

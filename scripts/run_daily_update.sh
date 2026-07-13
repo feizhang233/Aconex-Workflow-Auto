@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Weekday daily pipeline for Ubuntu VPS:
-#   1. Aconex API → SQLite (changed Workflows + Final-mail Comments)
-#   2. SQLite → Google Sheets
-#   3. SQLite → DocFlow (changed workflow statuses)
+#   1. Aconex API → SQLite + weekly manifest (new/changed Workflows)
+#   2. Triggered 72-hour Final Mail scan → SQLite + manifest comments
+#   3. Unsynced manifest entries → Google Sheets and DocFlow
 
 set -euo pipefail
 

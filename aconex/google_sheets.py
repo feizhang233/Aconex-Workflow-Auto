@@ -14,6 +14,7 @@ from .mail_final_scan import extract_review_comment_text, mail_scan_final_for_wo
 from .state_db import load_workflow_comments, load_workflows
 from .utils import display_date
 from .workflow_sync import workflow_sync_all, workflow_sync_reviewing
+from .workflow_update_manifest import mark_manifest_sync, pending_manifest_workflows
 
 
 GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
@@ -71,6 +72,12 @@ def sync_google_sheet_all(
     rows = _workflow_sheet_rows(load_workflows())
     gateway = GoogleSheetsGateway(spreadsheet_id, sheet_name, credentials_file)
     gateway.replace_all_paginated(rows)
+    pending = pending_manifest_workflows("google_sheet")
+    mark_manifest_sync(
+        "google_sheet",
+        (entry["workflow_id"] for entry in pending),
+        success=True,
+    )
     return GoogleSheetSyncResult(mode="full", rows_written=len(rows), rows_appended=len(rows))
 
 
@@ -84,49 +91,18 @@ def sync_google_sheet_reviewing(
     max_pages: int | None = None,
     save_raw: bool = False,
 ) -> GoogleSheetSyncResult:
-    workflows_before_sync = _workflow_snapshots(load_workflows())
     output = workflow_sync_reviewing(
         settings,
         client,
         max_pages=max_pages,
         save_raw=save_raw,
     )
-    refreshed_numbers = _workflow_numbers_from_output(output)
-    workflows_after_sync = load_workflows()
-    (
-        changed_numbers,
-        new_numbers,
-        advanced_to_step_2_numbers,
-        completed_step_2_numbers,
-    ) = _workflow_change_sets(
-        workflows_before_sync,
-        workflows_after_sync,
-        refreshed_numbers,
-    )
-    changed_workflows = len(changed_numbers)
-    new_workflows = len(new_numbers)
-    rows = _workflow_sheet_rows(workflows_after_sync)
-    rows_by_workflow = {row[0]: row for row in rows}
-    changed_rows = [
-        rows_by_workflow[workflow_number]
-        for workflow_number in sorted(changed_numbers | new_numbers)
-        if workflow_number in rows_by_workflow
-    ]
-    gateway = GoogleSheetsGateway(spreadsheet_id, sheet_name, credentials_file)
-    rows_written = gateway.update_changed_workflows(changed_rows, all_rows=rows)
-    gateway.append_refresh_log(
-        refreshed_workflows=len(refreshed_numbers),
-        changed_workflows=changed_workflows,
-        new_workflows=new_workflows,
-        advanced_to_step_2_numbers=advanced_to_step_2_numbers,
-        completed_step_2_numbers=completed_step_2_numbers,
-    )
-    return GoogleSheetSyncResult(
+    return _sync_manifest_to_google_sheet(
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=sheet_name,
+        credentials_file=credentials_file,
         mode="reviewing",
-        rows_written=rows_written,
-        rows_appended=new_workflows,
-        changed_workflows=changed_workflows,
-        new_workflows=new_workflows,
+        refreshed_workflows=len(_workflow_numbers_from_output(output)),
     )
 
 
@@ -141,12 +117,7 @@ def sync_google_sheet_reviewing_with_comments(
     mail_max_pages: int | None = None,
     save_raw: bool = False,
 ) -> GoogleSheetSyncResult:
-    """Refresh pending workflows, their Final-mail comments, and all sheet rows.
-
-    A full managed-sheet replacement is deliberate: comments can change without
-    any workflow-status change, so a status-only incremental write would leave
-    column I stale.
-    """
+    """Refresh workflows, scan triggered Final Mail, then consume the manifest."""
     workflows_before_sync = _workflow_snapshots(load_workflows())
     output = workflow_sync_reviewing(
         settings,
@@ -156,40 +127,165 @@ def sync_google_sheet_reviewing_with_comments(
     )
     refreshed_numbers = _workflow_numbers_from_output(output)
     workflows_after_sync = load_workflows()
-    (
-        changed_numbers,
-        new_numbers,
-        advanced_to_step_2_numbers,
-        completed_step_2_numbers,
-    ) = _workflow_change_sets(
+    step_2_final_numbers = _step_2_pending_to_final_numbers(
         workflows_before_sync,
         workflows_after_sync,
         refreshed_numbers,
     )
-    mail_scan_final_for_workflows(
-        settings,
-        client,
-        workflow_numbers=(str(row.get("workflow_number") or "") for row in workflows_after_sync),
-        max_pages=mail_max_pages,
-        save_raw=save_raw,
-    )
-    rows = _workflow_sheet_rows(load_workflows())
-    gateway = GoogleSheetsGateway(spreadsheet_id, sheet_name, credentials_file)
-    gateway.replace_all_paginated(rows)
-    gateway.append_refresh_log(
-        refreshed_workflows=len(refreshed_numbers),
-        changed_workflows=len(changed_numbers),
-        new_workflows=len(new_numbers),
-        advanced_to_step_2_numbers=advanced_to_step_2_numbers,
-        completed_step_2_numbers=completed_step_2_numbers,
-    )
-    return GoogleSheetSyncResult(
+    step_2_final_numbers.update(_pending_manifest_step_2_final_numbers())
+    if step_2_final_numbers:
+        mail_scan_final_for_workflows(
+            settings,
+            client,
+            workflow_numbers=step_2_final_numbers,
+            hours=72,
+            max_pages=mail_max_pages,
+            save_raw=save_raw,
+        )
+    return _sync_manifest_to_google_sheet(
+        spreadsheet_id=spreadsheet_id,
+        sheet_name=sheet_name,
+        credentials_file=credentials_file,
         mode="reviewing-with-comments",
-        rows_written=len(rows),
-        rows_appended=len(new_numbers),
-        changed_workflows=len(changed_numbers),
-        new_workflows=len(new_numbers),
+        refreshed_workflows=len(refreshed_numbers),
+        step_2_final_numbers=step_2_final_numbers,
     )
+
+
+def _sync_manifest_to_google_sheet(
+    *,
+    spreadsheet_id: str,
+    sheet_name: str,
+    credentials_file: Path,
+    mode: str,
+    refreshed_workflows: int,
+    step_2_final_numbers: set[str] | None = None,
+) -> GoogleSheetSyncResult:
+    pending = pending_manifest_workflows("google_sheet")
+    if not pending:
+        return GoogleSheetSyncResult(mode=mode, rows_written=0, rows_appended=0)
+
+    workflow_numbers = {str(entry["workflow_number"]) for entry in pending}
+    all_rows = _workflow_sheet_rows(load_workflows())
+    rows_by_workflow = {row[0]: row for row in all_rows}
+    rows = [
+        rows_by_workflow[number]
+        for number in sorted(workflow_numbers)
+        if number in rows_by_workflow
+    ]
+    missing_numbers = sorted(workflow_numbers - rows_by_workflow.keys())
+    missing_ids = [
+        str(entry["workflow_id"])
+        for entry in pending
+        if str(entry["workflow_number"]) in missing_numbers
+    ]
+    if missing_ids:
+        mark_manifest_sync(
+            "google_sheet",
+            missing_ids,
+            success=False,
+            error=f"Workflow is missing from SQLite: {', '.join(missing_numbers)}",
+        )
+
+    valid_ids = [
+        str(entry["workflow_id"])
+        for entry in pending
+        if str(entry["workflow_number"]) in rows_by_workflow
+    ]
+    if not valid_ids:
+        return GoogleSheetSyncResult(
+            mode=mode,
+            rows_written=0,
+            rows_appended=0,
+            changed_workflows=sum("status" in entry["change_types"] for entry in pending),
+            new_workflows=sum("new" in entry["change_types"] for entry in pending),
+        )
+    try:
+        gateway = GoogleSheetsGateway(spreadsheet_id, sheet_name, credentials_file)
+        rows_written = gateway.update_changed_workflows(rows, all_rows=rows)
+        gateway.append_refresh_log(
+            refreshed_workflows=refreshed_workflows,
+            changed_workflows=sum("status" in entry["change_types"] for entry in pending),
+            new_workflows=sum("new" in entry["change_types"] for entry in pending),
+            advanced_to_step_2_numbers=set(),
+            completed_step_2_numbers=step_2_final_numbers or set(),
+        )
+    except Exception as exc:
+        mark_manifest_sync(
+            "google_sheet",
+            valid_ids,
+            success=False,
+            error=str(exc),
+        )
+        raise
+    mark_manifest_sync("google_sheet", valid_ids, success=True)
+    return GoogleSheetSyncResult(
+        mode=mode,
+        rows_written=rows_written,
+        rows_appended=sum("new" in entry["change_types"] for entry in pending),
+        changed_workflows=sum("status" in entry["change_types"] for entry in pending),
+        new_workflows=sum("new" in entry["change_types"] for entry in pending),
+    )
+
+
+def _step_2_pending_to_final_numbers(
+    before: dict[str, tuple[Any, ...]],
+    after: list[dict[str, Any]],
+    refreshed_numbers: set[str],
+) -> set[str]:
+    triggered: set[str] = set()
+    for workflow in after:
+        workflow_id = str(workflow.get("workflow_id") or "")
+        workflow_number = str(workflow.get("workflow_number") or "")
+        previous = before.get(workflow_id)
+        if previous is None or workflow_number not in refreshed_numbers:
+            continue
+        old_step_2 = _review_code(_snapshot_value(previous, "step_2_review_status"))
+        new_step_2 = _review_code(workflow.get("step_2_review_status"))
+        terminated = str(workflow.get("review_status") or "").strip().casefold() in {
+            "terminate",
+            "terminated",
+        }
+        if old_step_2 == "P" and new_step_2 in {"A", "B", "C"} and not terminated:
+            triggered.add(workflow_number)
+    return triggered
+
+
+def _review_code(value: Any) -> str:
+    normalized = str(value or "").strip().upper()
+    return normalized[0] if normalized[:1] in {"A", "B", "C"} else "P"
+
+
+def _pending_manifest_step_2_final_numbers() -> set[str]:
+    """Recover mail-scan triggers after an earlier automation attempt failed."""
+    triggered: set[str] = set()
+    current_by_number = {
+        str(row.get("workflow_number") or ""): row for row in load_workflows()
+    }
+    for entry in pending_manifest_workflows("google_sheet"):
+        workflow_number = str(entry.get("workflow_number") or "")
+        current = current_by_number.get(workflow_number) or {}
+        if str(current.get("review_status") or "").strip().casefold() in {
+            "terminate",
+            "terminated",
+        }:
+            continue
+        for event in entry.get("events") or []:
+            if event.get("kind") != "status":
+                continue
+            old = event.get("old") or {}
+            new = event.get("new") or {}
+            terminated = str(new.get("review_status") or "").strip().casefold() in {
+                "terminate",
+                "terminated",
+            }
+            if (
+                _review_code(old.get("step_2_review_status")) == "P"
+                and _review_code(new.get("step_2_review_status")) in {"A", "B", "C"}
+                and not terminated
+            ):
+                triggered.add(workflow_number)
+    return {number for number in triggered if number}
 
 
 def _workflow_numbers_from_output(path: Path) -> set[str]:
@@ -212,58 +308,8 @@ def _workflow_snapshots(workflows: list[dict[str, Any]]) -> dict[str, tuple[Any,
     }
 
 
-def _workflow_change_sets(
-    before: dict[str, tuple[Any, ...]],
-    after: list[dict[str, Any]],
-    refreshed_numbers: set[str],
-) -> tuple[set[str], set[str], set[str], set[str]]:
-    changed_numbers: set[str] = set()
-    new_numbers: set[str] = set()
-    advanced_to_step_2_numbers: set[str] = set()
-    completed_step_2_numbers: set[str] = set()
-    for workflow in after:
-        workflow_id = str(workflow.get("workflow_id") or "")
-        workflow_number = str(workflow.get("workflow_number") or "")
-        if not workflow_id or workflow_number not in refreshed_numbers:
-            continue
-        previous = before.get(workflow_id)
-        current = _workflow_snapshots([workflow])[workflow_id]
-        if previous is None:
-            new_numbers.add(workflow_number)
-        elif previous != current:
-            changed_numbers.add(workflow_number)
-            if _moved_to_step_2(previous, current):
-                advanced_to_step_2_numbers.add(workflow_number)
-            if _completed_step_2(previous, current):
-                completed_step_2_numbers.add(workflow_number)
-    return (
-        changed_numbers,
-        new_numbers,
-        advanced_to_step_2_numbers,
-        completed_step_2_numbers,
-    )
-
-
 def _snapshot_value(snapshot: tuple[Any, ...], field_name: str) -> Any:
     return snapshot[WORKFLOW_SNAPSHOT_FIELDS.index(field_name)]
-
-
-def _moved_to_step_2(previous: tuple[Any, ...], current: tuple[Any, ...]) -> bool:
-    return (
-        not _snapshot_value(previous, "step_1_completed_time")
-        and bool(_snapshot_value(current, "step_1_completed_time"))
-        and not _snapshot_value(current, "step_2_completed_time")
-    )
-
-
-def _completed_step_2(previous: tuple[Any, ...], current: tuple[Any, ...]) -> bool:
-    return (
-        not _snapshot_value(previous, "step_2_completed_time")
-        and bool(_snapshot_value(current, "step_2_completed_time"))
-    ) or (
-        not _snapshot_value(previous, "is_completed")
-        and bool(_snapshot_value(current, "is_completed"))
-    )
 
 
 def _workflow_sheet_rows(workflows: list[dict[str, Any]]) -> list[list[str]]:
