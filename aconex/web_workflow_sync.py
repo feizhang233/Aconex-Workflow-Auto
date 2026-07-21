@@ -1,22 +1,31 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import json
+import re
 from typing import Any
 from urllib.parse import quote
 
 import requests
 
 from .config import Settings
+from .mail_final_scan import extract_review_comment_text
 from .state_db import (
     add_update_run,
     load_docflow_sync_state,
+    load_workflow_comments,
     load_workflows,
     upsert_docflow_sync_state,
 )
 from .workflow_update_manifest import mark_manifest_sync, pending_manifest_workflows
+
+
+# DocFlow ExternalWorkflowUpdate.message is maxLength 500 in OpenAPI.
+DOCFLOW_MESSAGE_MAX_LEN = 500
+DEFAULT_DOCFLOW_MESSAGE = "Aconex workflow status synchronized."
 
 
 @dataclass(frozen=True)
@@ -80,6 +89,7 @@ def push_workflows_to_docflow(
             )
         raise
     prior_hashes = load_docflow_sync_state() if changed_only else {}
+    comments_by_number = _comments_by_workflow()
     sent = skipped = failed = 0
 
     with requests.Session() as session:
@@ -99,7 +109,11 @@ def push_workflows_to_docflow(
                     )
                 continue
 
-            payload = _web_payload(row, reviewers)
+            payload = _web_payload(
+                row,
+                reviewers,
+                comment_text=comments_by_number.get(workflow_number, ""),
+            )
             payload_hash = _payload_hash(payload)
             if changed_only and prior_hashes.get(workflow_id) == payload_hash:
                 mark_manifest_sync("docflow", [workflow_id], success=True)
@@ -199,7 +213,12 @@ def _gds_as_step_2(reviewers: tuple[str, str]) -> tuple[str, str]:
     return others[0], gds[0]
 
 
-def _web_payload(row: Mapping[str, Any], reviewers: tuple[str, str]) -> dict[str, Any]:
+def _web_payload(
+    row: Mapping[str, Any],
+    reviewers: tuple[str, str],
+    *,
+    comment_text: str = "",
+) -> dict[str, Any]:
     step_1 = _feedback_code(row.get("step_1_review_status"))
     step_2 = _feedback_code(row.get("step_2_review_status"))
     terminated = str(row.get("review_status") or "").strip().casefold() == "terminate"
@@ -211,8 +230,43 @@ def _web_payload(row: Mapping[str, Any], reviewers: tuple[str, str]) -> dict[str
             "Terminate": terminated,
         },
         "terminate_workflow": terminated,
-        "message": "Aconex workflow status synchronized.",
+        # DocFlow has no dedicated comment field; Final Mail text goes in message.
+        "message": _docflow_message(comment_text),
     }
+
+
+def _docflow_message(comment_text: str) -> str:
+    """Build the external update message, preferring Final Mail comments."""
+    text = re.sub(r"\s+", " ", (comment_text or "").strip())
+    if not text:
+        return DEFAULT_DOCFLOW_MESSAGE
+    if len(text) <= DOCFLOW_MESSAGE_MAX_LEN:
+        return text
+    return text[: DOCFLOW_MESSAGE_MAX_LEN - 1].rstrip() + "…"
+
+
+def _comments_by_workflow() -> dict[str, str]:
+    """Aggregate Final Mail review comments by workflow number (newest-ish order)."""
+    comments: dict[str, list[str]] = defaultdict(list)
+    seen: dict[str, set[str]] = defaultdict(set)
+    for row in load_workflow_comments():
+        workflow_number = str(row.get("workflow_number") or "")
+        comment = next(
+            (
+                cleaned
+                for value in (row.get("review_comment"), row.get("comment_text"))
+                if (cleaned := extract_review_comment_text(str(value or "")))
+            ),
+            "",
+        )
+        if not workflow_number or not comment:
+            continue
+        key = comment.casefold()
+        if key in seen[workflow_number]:
+            continue
+        seen[workflow_number].add(key)
+        comments[workflow_number].append(comment)
+    return {number: "\n".join(values) for number, values in comments.items()}
 
 
 def _payload_hash(payload: Mapping[str, Any]) -> str:

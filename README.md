@@ -79,8 +79,10 @@ locally reviewing/pending workflows. These changes are merged into the current
 ISO-week manifest at `data/state/workflow_update_manifest.json`.
 `docflow-workflow-push-changed` publishes only manifest entries whose DocFlow
 sync is pending/failed; a `404 Workflow not found` is a normal skipped result
-and is not retried unless the workflow status changes. Newly discovered Aconex
-workflows are not queued for DocFlow; only later status changes are eligible.
+and is not retried unless the workflow status or Final Mail comments change.
+Newly discovered Aconex workflows are not queued for DocFlow; only later
+**status** or **comments** changes are eligible. DocFlow's external API has no
+dedicated comment field, so Final Mail text is sent in `message` (max 500 chars).
 All DocFlow requests include the Cloudflare Access Service Token headers when
 `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET` are configured.
 
@@ -113,9 +115,9 @@ manifest; Google Sheets updates only manifest entries not yet synchronized.
 `daily-update` is the end-to-end job for unattended runs:
 
 1. Pull new and reviewing/pending Aconex workflows into SQLite and the weekly manifest
-2. For qualifying Step 2 transitions, pull matching 72-hour Final-mail comments
-3. Update only unsynchronized manifest entries in Google Sheets
-4. Push only unsynchronized manifest entries to DocFlow (GDS is always Step 2)
+2. For qualifying Step 2 transitions (and recent finals missing comments), pull Final-mail comments
+3. Update only unsynchronized manifest entries in Google Sheets (status + comments)
+4. Push only unsynchronized manifest entries to DocFlow (status + Final Mail in `message`; GDS is always Step 2)
 
 Within one ISO week, repeated changes are merged. On week rollover, fully
 synchronized entries are removed and pending/failed entries are carried forward.

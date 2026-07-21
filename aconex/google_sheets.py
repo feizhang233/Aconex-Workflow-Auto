@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 from typing import Any
@@ -15,6 +15,10 @@ from .state_db import load_workflow_comments, load_workflows
 from .utils import display_date
 from .workflow_sync import workflow_sync_all, workflow_sync_reviewing
 from .workflow_update_manifest import mark_manifest_sync, pending_manifest_workflows
+
+# Re-scan Final Mail for recent Step-2 completions that never received comments
+# (e.g. after a prior scan stopped early on unsorted inbox pages).
+MISSING_COMMENT_LOOKBACK_DAYS = 14
 
 
 GOOGLE_SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
@@ -133,12 +137,17 @@ def sync_google_sheet_reviewing_with_comments(
         refreshed_numbers,
     )
     step_2_final_numbers.update(_pending_manifest_step_2_final_numbers())
+    # Self-heal: prior runs stopped after page 1 of unsorted inbox mail and left
+    # Step-2 finals without comments; re-include those until comments exist.
+    step_2_final_numbers.update(_step_2_final_missing_comment_numbers())
     if step_2_final_numbers:
         mail_scan_final_for_workflows(
             settings,
             client,
             workflow_numbers=step_2_final_numbers,
-            hours=72,
+            # Full list scan: inbox pages are not newest-first, so a 72h page-level
+            # window previously exited after the first page with details=0.
+            hours=None,
             max_pages=mail_max_pages,
             save_raw=save_raw,
         )
@@ -286,6 +295,49 @@ def _pending_manifest_step_2_final_numbers() -> set[str]:
             ):
                 triggered.add(workflow_number)
     return {number for number in triggered if number}
+
+
+def _step_2_final_missing_comment_numbers(
+    *,
+    lookback_days: int = MISSING_COMMENT_LOOKBACK_DAYS,
+) -> set[str]:
+    """Workflows that finished Step 2 recently but still have no Final Mail comments."""
+    commented = {
+        str(row.get("workflow_number") or "")
+        for row in load_workflow_comments()
+        if row.get("workflow_number")
+    }
+    cutoff = datetime.now(timezone.utc) - timedelta(days=lookback_days)
+    missing: set[str] = set()
+    for workflow in load_workflows():
+        workflow_number = str(workflow.get("workflow_number") or "")
+        if not workflow_number or workflow_number in commented:
+            continue
+        if str(workflow.get("review_status") or "").strip().casefold() in {
+            "terminate",
+            "terminated",
+        }:
+            continue
+        if _review_code(workflow.get("step_2_review_status")) not in {"A", "B", "C"}:
+            continue
+        completed = _parse_iso_datetime(workflow.get("step_2_completed_time"))
+        if completed is None or completed < cutoff:
+            continue
+        missing.add(workflow_number)
+    return missing
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 def _workflow_numbers_from_output(path: Path) -> set[str]:

@@ -63,9 +63,9 @@ def record_workflow_changes(
 
             _set_pending(entry["sync"]["google_sheet"])
             # Newly discovered Aconex workflows may not exist in DocFlow yet.
-            # Only a later status change is eligible for an incremental PATCH;
-            # DocFlow's existing 404 handling remains the final existence guard.
-            if kind == "status":
+            # Status and Final-mail comment updates are eligible for incremental
+            # PATCH; DocFlow's 404 handling remains the final existence guard.
+            if kind in {"status", "comments"}:
                 _set_pending(entry["sync"]["docflow"])
             dirty = True
 
@@ -222,10 +222,11 @@ def _entry_requires_sync(entry: Mapping[str, Any]) -> bool:
 
 
 def _apply_docflow_queue_policy(manifest: dict[str, Any]) -> bool:
-    """Remove legacy new-only entries from the incremental DocFlow queue."""
+    """Keep status/comments on the DocFlow queue; drop new-only legacy entries."""
     changed = False
     for entry in manifest["workflows"].values():
-        if "status" in (entry.get("change_types") or []):
+        change_types = set(entry.get("change_types") or [])
+        if change_types & {"status", "comments"}:
             continue
         state = entry["sync"]["docflow"]
         if state.get("status") not in {"pending", "failed"}:

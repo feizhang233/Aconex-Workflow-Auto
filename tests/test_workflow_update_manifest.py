@@ -52,10 +52,11 @@ class WorkflowUpdateManifestTests(unittest.TestCase):
         )["workflows"]["1"]
         self.assertEqual(entry["change_types"], ["new", "comments"])
         self.assertEqual(entry["sync"]["google_sheet"]["status"], "pending")
-        self.assertEqual(entry["sync"]["docflow"]["status"], "not_required")
+        # Final Mail comments are pushed to DocFlow via the message field.
+        self.assertEqual(entry["sync"]["docflow"]["status"], "pending")
         self.assertEqual(len(entry["events"]), 2)
 
-    def test_new_workflow_skips_docflow_until_a_status_change_occurs(self):
+    def test_new_workflow_skips_docflow_until_a_status_or_comment_change_occurs(self):
         record_workflow_changes(
             [{"workflow_id": "1", "workflow_number": "WF-000001", "kind": "new"}],
             manifest_path=self.path,
@@ -78,6 +79,24 @@ class WorkflowUpdateManifestTests(unittest.TestCase):
                 "docflow", manifest_path=self.path, now=self.week_one
             )],
             ["1"],
+        )
+
+    def test_comment_change_queues_docflow(self):
+        record_workflow_changes(
+            [{
+                "workflow_id": "2",
+                "workflow_number": "WF-000002",
+                "kind": "comments",
+                "mail_ids": ["mail-9"],
+            }],
+            manifest_path=self.path,
+            now=self.week_one,
+        )
+        self.assertEqual(
+            [entry["workflow_id"] for entry in pending_manifest_workflows(
+                "docflow", manifest_path=self.path, now=self.week_one
+            )],
+            ["2"],
         )
 
     def test_existing_new_only_manifest_entry_is_removed_from_docflow_queue(self):

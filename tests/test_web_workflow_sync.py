@@ -3,8 +3,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from aconex.web_workflow_sync import (
+    DOCFLOW_MESSAGE_MAX_LEN,
     _api_root,
     _docflow_headers,
+    _docflow_message,
     _feedback_code,
     _gds_as_step_2,
     _payload_hash,
@@ -33,6 +35,21 @@ class WebWorkflowSyncTests(unittest.TestCase):
         self.assertEqual(payload["feedback_status"], {"UTIBER": "B", "GDS": "P"})
         self.assertEqual(payload["feedback"], {"UTIBER": True, "GDS": False, "Terminate": False})
         self.assertFalse(payload["terminate_workflow"])
+        self.assertEqual(payload["message"], "Aconex workflow status synchronized.")
+
+    def test_web_payload_includes_final_mail_comment_in_message(self):
+        payload = _web_payload(
+            {"step_1_review_status": "A-Approved", "step_2_review_status": "B-Approved with comments"},
+            ("UTIBER", "GDS"),
+            comment_text="See supplementary files for details.",
+        )
+        self.assertEqual(payload["message"], "See supplementary files for details.")
+
+    def test_docflow_message_truncates_to_api_limit(self):
+        long_text = "x" * (DOCFLOW_MESSAGE_MAX_LEN + 50)
+        message = _docflow_message(long_text)
+        self.assertEqual(len(message), DOCFLOW_MESSAGE_MAX_LEN)
+        self.assertTrue(message.endswith("…"))
 
     def test_web_payload_marks_terminated_workflow(self):
         payload = _web_payload({"review_status": "Terminate"}, ("R1", "R2"))
@@ -79,6 +96,7 @@ class WebWorkflowSyncTests(unittest.TestCase):
 
     @patch("aconex.web_workflow_sync.add_update_run")
     @patch("aconex.web_workflow_sync.mark_manifest_sync")
+    @patch("aconex.web_workflow_sync.load_workflow_comments", return_value=[])
     @patch("aconex.web_workflow_sync.load_docflow_sync_state")
     @patch("aconex.web_workflow_sync._load_feedback_reviewers")
     @patch("aconex.web_workflow_sync.load_workflows")
@@ -89,6 +107,7 @@ class WebWorkflowSyncTests(unittest.TestCase):
         load_workflows,
         load_reviewers,
         load_hashes,
+        _load_comments,
         mark_sync,
         _add_run,
     ):

@@ -163,16 +163,20 @@ def mail_scan_final_for_workflows(
     client: AconexClient,
     *,
     workflow_numbers: Iterable[str],
-    hours: int = 72,
+    hours: int | None = None,
     max_pages: int | None = None,
     output: Path | None = None,
     save_raw: bool = False,
 ) -> Path:
     """Scan Final workflow mails whose workflow number is in ``workflow_numbers``.
 
-    The recent mail list is still paged through because the Aconex Mail API does not
-    support an exact Final-workflow-number query.  Mail details are requested
-    only after the subject matches one of the supplied workflow numbers.
+    The full mail list is still paged through because the Aconex Mail API does not
+    support an exact Final-workflow-number query, and inbox pages are not ordered by
+    sent date. Mail details are requested only after the subject matches one of the
+    supplied workflow numbers.
+
+    ``hours`` may limit which list rows are considered, but it is not used for
+    page-level early exit (that assumption is unsafe with unsorted pages).
     """
     matched_numbers = {
         normalized[0]
@@ -285,7 +289,7 @@ def _scan_mail(
     run_rows: list[dict[str, Any]] = []
     changed_mail_ids: dict[str, set[str]] = {}
 
-    for summary in _iter_mail_summaries(settings, client, max_pages=max_pages, save_raw=save_raw, cutoff=cutoff):
+    for summary in _iter_mail_summaries(settings, client, max_pages=max_pages, save_raw=save_raw):
         checked_count += 1
         if cutoff is not None and not _is_recent(summary.sent_date, cutoff):
             continue
@@ -387,8 +391,12 @@ def _iter_mail_summaries(
     *,
     max_pages: int | None,
     save_raw: bool,
-    cutoff: datetime | None,
 ) -> Iterable[MailSummary]:
+    """Yield mail list rows page by page.
+
+    Inbox pages are not reliably ordered by sent date, so callers that need a
+    time window must filter each summary themselves rather than stopping early.
+    """
     page_number = 1
     pages_scanned = 0
     total_pages: int | None = None
@@ -418,8 +426,6 @@ def _iter_mail_summaries(
         summaries = [summary for summary in summaries if summary.mail_id]
         for summary in summaries:
             yield summary
-        if cutoff is not None and summaries and all(_sent_before(summary.sent_date, cutoff) for summary in summaries):
-            break
         if total_pages is not None and page_number >= total_pages:
             break
         page_number += 1
@@ -520,11 +526,6 @@ def _subject_workflow_number(subject: str) -> tuple[str, int] | None:
 def _is_recent(value: str, cutoff: datetime) -> bool:
     parsed = _parse_datetime(value)
     return parsed is not None and parsed >= cutoff
-
-
-def _sent_before(value: str, cutoff: datetime) -> bool:
-    parsed = _parse_datetime(value)
-    return parsed is not None and parsed < cutoff
 
 
 def _parse_xml_bytes(content: bytes) -> etree._Element | None:
